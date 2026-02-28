@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code Viewer</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0d1117;--surface:#161b22;--surface2:#1c2129;--border:#30363d;--text:#e6edf3;--text2:#8b949e;--accent:#58a6ff;--green:#3fb950;--orange:#d29922;--red:#f85149;--purple:#bc8cff}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);height:100vh;overflow:hidden;display:flex}
+/* 三栏布局 */
+#projects-panel{width:260px;min-width:260px;border-right:1px solid var(--border);display:flex;flex-direction:column;height:100vh}
+#sessions-panel{width:300px;min-width:300px;border-right:1px solid var(--border);display:flex;flex-direction:column;height:100vh}
+#detail-panel{flex:1;display:flex;flex-direction:column;height:100vh;overflow:hidden}
+.panel-header{padding:14px 16px;border-bottom:1px solid var(--border);font-size:18px;font-weight:600;color:var(--text2);background:var(--surface);flex-shrink:0;display:flex;align-items:center;gap:8px}
+.panel-header .count{background:var(--border);border-radius:10px;padding:1px 8px;font-size:12px;font-weight:400}
+.panel-list{flex:1;overflow-y:auto;padding:4px}
+.panel-list::-webkit-scrollbar{width:6px}
+.panel-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+/* 项目列表项 */
+.project-item,.session-item{padding:10px 12px;border-radius:6px;cursor:pointer;margin:2px 4px;transition:background .15s}
+.project-item:hover,.session-item:hover{background:var(--surface2)}
+.project-item.active,.session-item.active{background:rgba(88,166,255,.15);border-left:2px solid var(--accent)}
+.project-item .name{font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.project-item .meta{font-size:11px;color:var(--text2);margin-top:3px;display:flex;justify-content:space-between}
+/* 会话列表项 */
+.session-item .preview{font-size:13px;color:var(--text);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.session-item .meta{font-size:11px;color:var(--text2);margin-top:4px;display:flex;justify-content:space-between}
+/* 统计栏 */
+#stats-bar{padding:12px 20px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0;display:none;flex-wrap:wrap;gap:6px 16px;position:relative}
+.stat-item{font-size:18px;color:var(--text2);font-weight:500}
+.stat-item span{color:var(--text);font-weight:600;margin-left:4px;font-size:18px}
+.stat-item.input span{color:var(--accent)}
+.stat-item.output span{color:var(--green)}
+.stat-item.cache-create span{color:var(--orange)}
+.stat-item.cache-read span{color:var(--purple)}
+/* 滚动按钮 */
+.scroll-buttons{position:absolute;right:20px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:8px;z-index:10}
+.scroll-btn{width:36px;height:36px;border-radius:50%;background:var(--surface2);border:1px solid var(--border);color:var(--text2);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:600;transition:all .2s}
+.scroll-btn:hover{background:var(--border);color:var(--text);transform:translateY(-50%) scale(1.1)}
+.scroll-btn:active{transform:translateY(-50%) scale(0.95)}
+.scroll-btn.hidden{display:none}
+/* 消息区域 */
+#messages{flex:1;overflow-y:auto;padding:16px 20px;position:relative}
+#messages::-webkit-scrollbar{width:6px}
+#messages::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+#messages .scroll-buttons{position:sticky;bottom:20px;right:20px;display:flex;flex-direction:column;gap:8px;pointer-events:none;z-index:10}
+#messages .scroll-buttons .scroll-btn{pointer-events:auto}
+.message{margin-bottom:16px;padding:12px 16px;border-radius:8px;border:1px solid var(--border);position:relative}
+.message.user{background:rgba(88,166,255,.06);border-color:rgba(88,166,255,.2)}
+.message.assistant{background:var(--surface)}
+.message.system{background:transparent;border-color:var(--border);opacity:.6;font-size:12px}
+.message.sidechain{opacity:.5;border-style:dashed}
+.msg-header{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px;flex-wrap:wrap}
+.msg-role{font-weight:600;text-transform:uppercase;font-size:11px;padding:2px 6px;border-radius:3px}
+.msg-role.user{background:rgba(88,166,255,.2);color:var(--accent)}
+.msg-role.assistant{background:rgba(63,185,80,.2);color:var(--green)}
+.msg-role.system{background:rgba(139,148,158,.2);color:var(--text2)}
+.msg-time{color:var(--text2);font-size:11px}
+.msg-model{color:var(--purple);font-size:11px}
+.msg-stop{color:var(--text2);font-size:11px;font-style:italic}
+.msg-tokens{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;font-size:11px}
+.token-badge{padding:1px 6px;border-radius:3px;font-family:monospace}
+.token-badge.input{background:rgba(88,166,255,.15);color:var(--accent)}
+.token-badge.output{background:rgba(63,185,80,.15);color:var(--green)}
+.token-badge.cache-create{background:rgba(210,153,34,.15);color:var(--orange)}
+.token-badge.cache-read{background:rgba(188,140,255,.15);color:var(--purple)}
+/* 消息内容 */
+.msg-body{font-size:14px;line-height:1.6}
+.msg-body p{margin-bottom:8px}
+.msg-body pre{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;overflow-x:auto;margin:8px 0}
+.msg-body code{font-family:'Fira Code',Consolas,monospace;font-size:13px}
+.msg-body :not(pre)>code{background:var(--surface2);padding:1px 5px;border-radius:3px;font-size:12px}
+.msg-body ul,.msg-body ol{padding-left:20px;margin-bottom:8px}
+.msg-body blockquote{border-left:3px solid var(--border);padding-left:12px;color:var(--text2);margin:8px 0}
+.msg-body table{border-collapse:collapse;margin:8px 0;width:100%}
+.msg-body th,.msg-body td{border:1px solid var(--border);padding:6px 10px;text-align:left;font-size:13px}
+.msg-body th{background:var(--surface)}
+.msg-body img{max-width:100%}
+/* 工具块 */
+details.tool-block{margin:8px 0;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+details.tool-block summary{padding:8px 12px;background:var(--surface2);cursor:pointer;font-size:12px;color:var(--text2);font-family:monospace;user-select:none}
+details.tool-block summary:hover{background:var(--border)}
+details.tool-block .tool-content{padding:10px 12px;font-size:12px;max-height:400px;overflow:auto;background:var(--bg)}
+details.tool-block .tool-content pre{margin:0;border:none;padding:0;background:transparent}
+/* 空状态 */
+.empty-state{display:flex;align-items:center;justify-content:center;height:100%;color:var(--text2);font-size:14px;text-align:center;padding:20px}
+/* 加载 */
+.loading{text-align:center;padding:20px;color:var(--text2);font-size:13px}
+</style>
+</head>
+<body>
+
+<div id="projects-panel">
+  <div class="panel-header">项目列表 <span class="count" id="project-count">0</span></div>
+  <div class="panel-list" id="project-list"><div class="loading">加载中...</div></div>
+</div>
+
+<div id="sessions-panel">
+  <div class="panel-header">对话列表 <span class="count" id="session-count">0</span></div>
+  <div class="panel-list" id="session-list"><div class="empty-state">选择一个项目</div></div>
+</div>
+
+<div id="detail-panel">
+  <div id="stats-bar">
+    <div class="scroll-buttons">
+      <button class="scroll-btn" onclick="scrollToTop()" title="滚动到顶部">↑</button>
+      <button class="scroll-btn" onclick="scrollToBottom()" title="滚动到底部">↓</button>
+    </div>
+  </div>
+  <div id="messages">
+    <div class="empty-state">选择一个对话查看详情</div>
+    <div class="scroll-buttons" style="position:absolute">
+      <button class="scroll-btn" onclick="scrollToTop()" title="滚动到顶部">↑</button>
+      <button class="scroll-btn" onclick="scrollToBottom()" title="滚动到底部">↓</button>
+    </div>
+  </div>
+</div>
+
+<script>
+marked.setOptions({
+  highlight: (code, lang) => {
+    if (lang && hljs.getLanguage(lang)) return hljs.highlight(code, { language: lang }).value;
+    return hljs.highlightAuto(code).value;
+  },
+  breaks: true
+});
+
+let currentProject = null;
+let currentSession = null;
+let currentMessageCount = 0;
+let autoRefreshTimers = {};
+const REFRESH_INTERVAL = 3000; // 3秒轮询
+
+// 格式化数字
+function fmtNum(n) {
+  if (n == null) return '0';
+  return n.toLocaleString();
+}
+
+// 格式化时间
+function fmtTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  return d.toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+}
+
+function fmtTimeFull(ts) {
+  if (!ts) return '';
+  return new Date(ts).toLocaleString('zh-CN');
+}
+
+// 更新滚动按钮可见性
+function updateScrollButtons() {
+  const container = document.getElementById('messages');
+  const topBtn = document.querySelector('#messages .scroll-btn:first-child');
+  const bottomBtn = document.querySelector('#messages .scroll-btn:last-child');
+
+  if (!container || !topBtn || !bottomBtn) return;
+
+  const scrollTop = container.scrollTop;
+  const scrollHeight = container.scrollHeight;
+  const clientHeight = container.clientHeight;
+
+  // 顶部：滚动位置 < 10
+  topBtn.classList.toggle('hidden', scrollTop < 10);
+  // 底部：距离底部 < 10
+  bottomBtn.classList.toggle('hidden', scrollHeight - scrollTop - clientHeight < 10);
+}
+
+// 滚动函数
+function scrollToTop() {
+  const container = document.getElementById('messages');
+  if (container) {
+    container.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+}
+
+function scrollToBottom() {
+  const container = document.getElementById('messages');
+  if (container) {
+    container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+  }
+}
+
+// 加载项目列表
+async function loadProjects() {
+  const res = await fetch('/api/projects');
+  const projects = await res.json();
+  const el = document.getElementById('project-list');
+  document.getElementById('project-count').textContent = projects.length;
+
+  if (!projects.length) { el.innerHTML = '<div class="empty-state">没有找到项目</div>'; return; }
+
+  renderProjectList(projects, el);
+}
+
+// 选择项目
+async function selectProject(id) {
+  currentProject = id;
+  currentSession = null;
+  currentMessageCount = 0;
+  clearInterval(autoRefreshTimers.messages);
+  document.querySelectorAll('.project-item').forEach(e => e.classList.toggle('active', e.dataset.id === id));
+  document.getElementById('session-list').innerHTML = '<div class="loading">加载中...</div>';
+  document.getElementById('messages').innerHTML = '<div class="empty-state">选择一个对话查看详情</div>';
+  document.getElementById('stats-bar').style.display = 'none';
+
+  const res = await fetch(`/api/projects/${encodeURIComponent(id)}/sessions`);
+  const sessions = await res.json();
+  const el = document.getElementById('session-list');
+  document.getElementById('session-count').textContent = sessions.length;
+
+  if (!sessions.length) { el.innerHTML = '<div class="empty-state">没有对话记录</div>'; return; }
+
+  renderSessionList(sessions, el);
+  startSessionsRefresh();
+}
+
+// 选择对话
+async function selectSession(id) {
+  currentSession = id;
+  currentMessageCount = 0;
+  document.querySelectorAll('.session-item').forEach(e => e.classList.toggle('active', e.dataset.id === id));
+  document.getElementById('messages').innerHTML = '<div class="loading">加载中...</div>';
+
+  const res = await fetch(`/api/sessions/${encodeURIComponent(currentProject)}/${encodeURIComponent(id)}`);
+  const data = await res.json();
+  renderStats(data.stats);
+  renderMessages(data.messages);
+  currentMessageCount = data.messages.length;
+  // 滚动到底部
+  scrollToBottom();
+  startMessagesRefresh();
+}
+
+// 渲染统计栏
+function renderStats(stats) {
+  const bar = document.getElementById('stats-bar');
+  bar.style.display = 'flex';
+  bar.innerHTML = `
+    <div class="stat-item input">Input Tokens:<span>${fmtNum(stats.totalInputTokens)}</span></div>
+    <div class="stat-item output">Output Tokens:<span>${fmtNum(stats.totalOutputTokens)}</span></div>
+    <div class="stat-item cache-create">Cache Creation:<span>${fmtNum(stats.totalCacheCreationTokens)}</span></div>
+    <div class="stat-item cache-read">Cache Read:<span>${fmtNum(stats.totalCacheReadTokens)}</span></div>
+    <div class="stat-item">消息数:<span>${stats.messageCount}</span></div>
+    <div class="stat-item">User:<span>${stats.userTurns}</span></div>
+    <div class="stat-item">Assistant:<span>${stats.assistantTurns}</span></div>
+    <div class="stat-item">模型:<span>${stats.models.join(', ') || '-'}</span></div>
+  `;
+}
+
+// 渲染消息列表
+function renderMessages(messages) {
+  const el = document.getElementById('messages');
+  if (!messages.length) {
+    el.innerHTML = `<div class="empty-state">没有消息</div>
+    <div class="scroll-buttons" style="position:absolute">
+      <button class="scroll-btn" onclick="scrollToTop()" title="滚动到顶部">↑</button>
+      <button class="scroll-btn" onclick="scrollToBottom()" title="滚动到底部">↓</button>
+    </div>`;
+    return;
+  }
+
+  el.innerHTML = messages.map(renderMessage).join('') + `
+    <div class="scroll-buttons">
+      <button class="scroll-btn" onclick="scrollToTop()" title="滚动到顶部">↑</button>
+      <button class="scroll-btn" onclick="scrollToBottom()" title="滚动到底部">↓</button>
+    </div>`;
+  el.querySelectorAll('pre code').forEach(block => {
+    try { hljs.highlightElement(block); } catch {}
+  });
+  // 更新按钮可见性
+  setTimeout(updateScrollButtons, 100);
+}
+
+function renderMessage(msg) {
+  const sidechainClass = msg.isSidechain ? ' sidechain' : '';
+  if (msg.type === 'system') {
+    return `<div class="message system${sidechainClass}">
+      <div class="msg-header"><span class="msg-role system">SYSTEM${msg.subtype ? ' · ' + msg.subtype : ''}</span><span class="msg-time">${fmtTimeFull(msg.timestamp)}</span></div>
+      <div class="msg-body">${escHtml(typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content))}</div>
+    </div>`;
+  }
+
+  if (msg.type === 'user') {
+    return `<div class="message user${sidechainClass}">
+      <div class="msg-header"><span class="msg-role user">USER</span><span class="msg-time">${fmtTimeFull(msg.timestamp)}</span></div>
+      <div class="msg-body">${renderContent(msg.content)}</div>
+    </div>`;
+  }
+
+  if (msg.type === 'assistant') {
+    const u = msg.usage || {};
+    let tokensHtml = '';
+    if (u.inputTokens || u.outputTokens || u.cacheCreationTokens || u.cacheReadTokens) {
+      tokensHtml = `<div class="msg-tokens">
+        <span class="token-badge input">IN ${fmtNum(u.inputTokens)}</span>
+        <span class="token-badge output">OUT ${fmtNum(u.outputTokens)}</span>
+        ${u.cacheCreationTokens ? `<span class="token-badge cache-create">CACHE+ ${fmtNum(u.cacheCreationTokens)}</span>` : ''}
+        ${u.cacheReadTokens ? `<span class="token-badge cache-read">CACHE↓ ${fmtNum(u.cacheReadTokens)}</span>` : ''}
+      </div>`;
+    }
+    return `<div class="message assistant${sidechainClass}">
+      <div class="msg-header">
+        <span class="msg-role assistant">ASSISTANT</span>
+        <span class="msg-time">${fmtTimeFull(msg.timestamp)}</span>
+        ${msg.model ? `<span class="msg-model">${msg.model}</span>` : ''}
+        ${msg.stopReason ? `<span class="msg-stop">${msg.stopReason}</span>` : ''}
+      </div>
+      <div class="msg-body">${renderContent(msg.content)}</div>
+      ${tokensHtml}
+    </div>`;
+  }
+
+  return '';
+}
+
+// 渲染消息内容（支持字符串和数组）
+function renderContent(content) {
+  if (!content) return '';
+  if (typeof content === 'string') return renderMarkdown(content);
+  if (!Array.isArray(content)) return escHtml(JSON.stringify(content));
+
+  return content.map(block => {
+    if (block.type === 'text') return renderMarkdown(block.text);
+    if (block.type === 'tool_use') {
+      const inputStr = JSON.stringify(block.input, null, 2);
+      return `<details class="tool-block" open><summary>🔧 ${escHtml(block.name)}</summary>
+        <div class="tool-content"><pre><code class="language-json">${escHtml(inputStr)}</code></pre></div></details>`;
+    }
+    if (block.type === 'tool_result') {
+      const resultText = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2);
+      return `<details class="tool-block" open><summary>📋 Tool Result (${escHtml(block.tool_use_id || '')})</summary>
+        <div class="tool-content"><pre><code>${escHtml(resultText)}</code></pre></div></details>`;
+    }
+    if (block.type === 'thinking') {
+      return `<details class="tool-block" open><summary>💭 Thinking</summary>
+        <div class="tool-content">${renderMarkdown(block.thinking || '')}</div></details>`;
+    }
+    return `<details class="tool-block" open><summary>${escHtml(block.type || 'unknown')}</summary>
+      <div class="tool-content"><pre><code>${escHtml(JSON.stringify(block, null, 2))}</code></pre></div></details>`;
+  }).join('');
+}
+
+function renderMarkdown(text) {
+  try { return marked.parse(text || ''); } catch { return escHtml(text); }
+}
+
+function escHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// 自动刷新：项目列表
+function startProjectsRefresh() {
+  clearInterval(autoRefreshTimers.projects);
+  autoRefreshTimers.projects = setInterval(async () => {
+    try {
+      const res = await fetch('/api/projects');
+      const projects = await res.json();
+      const list = document.getElementById('project-list');
+      const oldCount = list.children.length;
+      // 只在数量或顺序变化时更新（避免闪烁）
+      const newIds = projects.map(p => p.id).join(',');
+      const oldIds = [...list.children].map(el => el.dataset.id).join(',');
+      if (newIds !== oldIds) {
+        renderProjectList(projects, list);
+      }
+    } catch {}
+  }, REFRESH_INTERVAL);
+}
+
+// 自动刷新：对话列表
+function startSessionsRefresh() {
+  clearInterval(autoRefreshTimers.sessions);
+  if (!currentProject) return;
+  autoRefreshTimers.sessions = setInterval(async () => {
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/sessions`);
+      const sessions = await res.json();
+      const list = document.getElementById('session-list');
+      const newIds = sessions.map(s => s.id).join(',');
+      const oldIds = [...list.children].map(el => el.dataset.id).join(',');
+      if (newIds !== oldIds) {
+        renderSessionList(sessions, list);
+      }
+    } catch {}
+  }, REFRESH_INTERVAL);
+}
+
+// 自动刷新：当前对话内容（增量追加）
+function startMessagesRefresh() {
+  clearInterval(autoRefreshTimers.messages);
+  if (!currentProject || !currentSession) return;
+  autoRefreshTimers.messages = setInterval(async () => {
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(currentProject)}/${encodeURIComponent(currentSession)}`);
+      const data = await res.json();
+      if (data.messages.length > currentMessageCount) {
+        // 增量追加新消息
+        const container = document.getElementById('messages');
+        const newMsgs = data.messages.slice(currentMessageCount);
+        for (const msg of newMsgs) {
+          container.insertAdjacentHTML('beforeend', renderMessage(msg));
+        }
+        // 移除旧的滚动按钮并添加新的
+        const oldBtns = container.querySelector('.scroll-buttons');
+        if (oldBtns) oldBtns.remove();
+        container.insertAdjacentHTML('beforeend', `
+          <div class="scroll-buttons">
+            <button class="scroll-btn" onclick="scrollToTop()" title="滚动到顶部">↑</button>
+            <button class="scroll-btn" onclick="scrollToBottom()" title="滚动到底部">↓</button>
+          </div>`);
+        currentMessageCount = data.messages.length;
+        // 更新统计栏
+        renderStats(data.stats);
+        // 高亮新代码块
+        document.querySelectorAll('#messages pre code:not(.hljs)').forEach(el => hljs.highlightElement(el));
+        // 自动滚动到底部
+        container.scrollTop = container.scrollHeight;
+        // 更新按钮可见性
+        setTimeout(updateScrollButtons, 100);
+      }
+    } catch {}
+  }, REFRESH_INTERVAL);
+}
+
+function renderProjectList(projects, list) {
+  list.innerHTML = projects.map(p => `
+    <div class="project-item ${p.id === currentProject ? 'active' : ''}" data-id="${escHtml(p.id)}" onclick="selectProject('${escHtml(p.id)}')">
+      <div class="name" title="${escHtml(p.displayName)}">${escHtml(p.displayName)}</div>
+      <div class="meta"><span>${p.sessionCount} 个对话</span><span>${fmtTime(p.latestTimestamp)}</span></div>
+    </div>`).join('');
+}
+
+function renderSessionList(sessions, list) {
+  list.innerHTML = sessions.map(s => `
+    <div class="session-item ${s.id === currentSession ? 'active' : ''}" data-id="${escHtml(s.id)}" onclick="selectSession('${escHtml(s.id)}')">
+      <div class="preview">${escHtml(s.preview || s.id)}</div>
+      <div class="meta"><span>${s.messageCount} 条消息</span><span>${fmtTime(s.latestTimestamp)}</span></div>
+    </div>`).join('');
+}
+
+// 启动
+loadProjects();
+startProjectsRefresh();
+
+// 监听滚动事件更新按钮可见性
+const messagesEl = document.getElementById('messages');
+if (messagesEl) {
+  messagesEl.addEventListener('scroll', updateScrollButtons);
+}
+</script>
+</body>
+</html>
