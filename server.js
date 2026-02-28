@@ -231,49 +231,28 @@ app.get('/api/sessions/:projectId/:sessionId', (req, res) => {
     stats.totalTokens = stats.totalInputTokens + stats.totalOutputTokens +
                        stats.totalCacheCreationTokens + stats.totalCacheReadTokens;
 
-    // 优化：吞吐量只计算 Input + Output Tokens（排除缓存相关）
-    // 缓存 token 可能非常大，导致吞吐量计算失真
-    const activeTokens = stats.totalInputTokens + stats.totalOutputTokens;
-
-    // 基于有 token 使用的消息计算时间窗口
-    let tokenFirstTimestamp = null;
-    let tokenLastTimestamp = null;
-
-    for (const rec of records) {
-      if (rec.type === 'assistant' && rec.message && rec.message.usage) {
-        const usage = rec.message.usage;
-        const hasActiveTokens = (usage.input_tokens || 0) + (usage.output_tokens || 0) > 0;
-        if (hasActiveTokens && rec.timestamp) {
-          if (!tokenFirstTimestamp) tokenFirstTimestamp = rec.timestamp;
-          tokenLastTimestamp = rec.timestamp;
-        }
-      }
-    }
-
-    if (tokenFirstTimestamp && tokenLastTimestamp) {
-      const tokenStartTime = new Date(tokenFirstTimestamp).getTime();
-      const tokenEndTime = new Date(tokenLastTimestamp).getTime();
-      const tokenDurationMs = tokenEndTime - tokenStartTime;
-      const tokenDurationSec = tokenDurationMs > 0 ? tokenDurationMs / 1000 : 0.1;
-
-      // 只有当时间差大于 100 毫秒时才计算吞吐量
-      stats.throughput = tokenDurationMs > 100 ? activeTokens / tokenDurationSec : 0;
-    } else {
-      stats.throughput = 0;
-    }
-
-    // console.log(`  Final throughput: ${stats.throughput}`);
-
     // 计算单消息耗时
+    let totalResponseTimeMs = 0;
     for (const msg of messages) {
       if (msg.type === 'assistant' && msg.parentUuid) {
         const userMsg = userMessagesMap.get(msg.parentUuid);
         if (userMsg) {
           msg.responseTimeMs = msg.timestampMs - userMsg.timestampMs;
           msg.responseTimeSec = msg.responseTimeMs > 0 ? msg.responseTimeMs / 1000 : 0;
+          // 累加响应时间
+          if (msg.responseTimeMs > 0) {
+            totalResponseTimeMs += msg.responseTimeMs;
+          }
         }
       }
     }
+
+    // 计算吞吐量：总 output tokens ÷ 总响应耗时（秒）
+    // 只计算实际生成 token 的时间，不包含用户思考/空闲时间
+    const totalResponseTimeSec = totalResponseTimeMs > 0 ? totalResponseTimeMs / 1000 : 0;
+    stats.throughput = (totalResponseTimeSec > 0 && stats.totalOutputTokens > 0)
+      ? stats.totalOutputTokens / totalResponseTimeSec
+      : 0;
 
     res.json({ messages, stats });
   } catch (err) {
