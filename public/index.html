@@ -37,6 +37,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 .stat-item.output span{color:var(--green)}
 .stat-item.cache-create span{color:var(--orange)}
 .stat-item.cache-read span{color:var(--purple)}
+.stat-item.throughput,.stat-item.duration{font-size:16px}
+.stat-item.throughput span,.stat-item.duration span{font-size:16px}
 /* 滚动按钮 */
 .scroll-buttons{position:absolute;right:20px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:8px;z-index:10}
 .scroll-btn{width:36px;height:36px;border-radius:50%;background:var(--surface2);border:1px solid var(--border);color:var(--text2);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:600;transition:all .2s}
@@ -61,6 +63,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 .msg-role.system{background:rgba(139,148,158,.2);color:var(--text2)}
 .msg-time{color:var(--text2);font-size:11px}
 .msg-model{color:var(--purple);font-size:11px}
+.msg-response-time{color:var(--orange);font-size:11px;font-weight:500}
 .msg-stop{color:var(--text2);font-size:11px;font-style:italic}
 .msg-tokens{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;font-size:11px}
 .token-badge{padding:1px 6px;border-radius:3px;font-family:monospace}
@@ -242,15 +245,31 @@ function renderStats(stats) {
   const bar = document.getElementById('stats-bar');
   bar.style.display = 'flex';
   bar.innerHTML = `
-    <div class="stat-item input">Input Tokens:<span>${fmtNum(stats.totalInputTokens)}</span></div>
-    <div class="stat-item output">Output Tokens:<span>${fmtNum(stats.totalOutputTokens)}</span></div>
-    <div class="stat-item cache-create">Cache Creation:<span>${fmtNum(stats.totalCacheCreationTokens)}</span></div>
-    <div class="stat-item cache-read">Cache Read:<span>${fmtNum(stats.totalCacheReadTokens)}</span></div>
+    <div class="stat-item input">Input Tokens:<span>${stats.totalInputTokens}</span></div>
+    <div class="stat-item output">Output Tokens:<span>${stats.totalOutputTokens}</span></div>
+    <div class="stat-item cache-create">Cache Creation:<span>${stats.totalCacheCreationTokens}</span></div>
+    <div class="stat-item cache-read">Cache Read:<span>${stats.totalCacheReadTokens}</span></div>
     <div class="stat-item">消息数:<span>${stats.messageCount}</span></div>
     <div class="stat-item">User:<span>${stats.userTurns}</span></div>
     <div class="stat-item">Assistant:<span>${stats.assistantTurns}</span></div>
     <div class="stat-item">模型:<span>${stats.models.join(', ') || '-'}</span></div>
+    ${stats.sessionId ? `<div class="stat-item">Session:<span title="${stats.sessionId}">${fmtSessionId(stats.sessionId)}</span></div>` : ''}
+    <div class="stat-item throughput">Throughput:<span>${Math.round(stats.throughput)} token/s</span></div>
+    <div class="stat-item duration">耗时:<span>${fmtDuration(stats.totalDurationSec)}</span></div>
   `;
+}
+
+function fmtSessionId(id) {
+  return id.length > 20 ? id.substring(0, 8) + '...' + id.substring(id.length - 8) : id;
+}
+
+function fmtDuration(seconds) {
+  if (seconds < 60) {
+    return seconds.toFixed(1) + ' 秒';
+  } else {
+    const minutes = seconds / 60;
+    return minutes.toFixed(1) + ' 分钟';
+  }
 }
 
 // 渲染消息列表
@@ -298,17 +317,22 @@ function renderMessage(msg) {
     let tokensHtml = '';
     if (u.inputTokens || u.outputTokens || u.cacheCreationTokens || u.cacheReadTokens) {
       tokensHtml = `<div class="msg-tokens">
-        <span class="token-badge input">IN ${fmtNum(u.inputTokens)}</span>
-        <span class="token-badge output">OUT ${fmtNum(u.outputTokens)}</span>
-        ${u.cacheCreationTokens ? `<span class="token-badge cache-create">CACHE+ ${fmtNum(u.cacheCreationTokens)}</span>` : ''}
-        ${u.cacheReadTokens ? `<span class="token-badge cache-read">CACHE↓ ${fmtNum(u.cacheReadTokens)}</span>` : ''}
+        <span class="token-badge input">IN ${u.inputTokens}</span>
+        <span class="token-badge output">OUT ${u.outputTokens}</span>
+        ${u.cacheCreationTokens ? `<span class="token-badge cache-create">CACHE+ ${u.cacheCreationTokens}</span>` : ''}
+        ${u.cacheReadTokens ? `<span class="token-badge cache-read">CACHE↓ ${u.cacheReadTokens}</span>` : ''}
       </div>`;
+    }
+    let responseTimeHtml = '';
+    if (msg.responseTimeSec !== undefined) {
+      responseTimeHtml = `<span class="msg-response-time" title="从用户消息到回复耗时">${msg.responseTimeSec.toFixed(2)} 秒</span>`;
     }
     return `<div class="message assistant${sidechainClass}">
       <div class="msg-header">
         <span class="msg-role assistant">ASSISTANT</span>
         <span class="msg-time">${fmtTimeFull(msg.timestamp)}</span>
         ${msg.model ? `<span class="msg-model">${msg.model}</span>` : ''}
+        ${responseTimeHtml}
         ${msg.stopReason ? `<span class="msg-stop">${msg.stopReason}</span>` : ''}
       </div>
       <div class="msg-body">${renderContent(msg.content)}</div>

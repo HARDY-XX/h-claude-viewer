@@ -140,10 +140,12 @@ app.get('/api/sessions/:projectId/:sessionId', (req, res) => {
       messageCount: 0,
       models: new Set(),
       firstTimestamp: null,
-      latestTimestamp: null
+      latestTimestamp: null,
+      sessionId: req.params.sessionId
     };
 
     const messages = [];
+    const userMessagesMap = new Map();
 
     for (const rec of records) {
       if (rec.timestamp) {
@@ -154,10 +156,12 @@ app.get('/api/sessions/:projectId/:sessionId', (req, res) => {
       if (rec.type === 'user' && rec.message) {
         stats.userTurns++;
         stats.messageCount++;
-        messages.push({
+        const userMsg = {
           type: 'user',
           uuid: rec.uuid,
+          parentUuid: rec.parentUuid,
           timestamp: rec.timestamp,
+          timestampMs: new Date(rec.timestamp).getTime(),
           content: rec.message.content,
           cwd: rec.cwd,
           version: rec.version,
@@ -165,7 +169,9 @@ app.get('/api/sessions/:projectId/:sessionId', (req, res) => {
           permissionMode: rec.permissionMode,
           isSidechain: rec.isSidechain,
           toolUseResult: rec.toolUseResult
-        });
+        };
+        userMessagesMap.set(rec.uuid, userMsg);
+        messages.push(userMsg);
       } else if (rec.type === 'assistant' && rec.message) {
         stats.assistantTurns++;
         stats.messageCount++;
@@ -176,10 +182,12 @@ app.get('/api/sessions/:projectId/:sessionId', (req, res) => {
         stats.totalCacheReadTokens += usage.cache_read_input_tokens || 0;
         if (rec.message.model) stats.models.add(rec.message.model);
 
-        messages.push({
+        const assistantMsg = {
           type: 'assistant',
           uuid: rec.uuid,
+          parentUuid: rec.parentUuid,
           timestamp: rec.timestamp,
+          timestampMs: new Date(rec.timestamp).getTime(),
           content: rec.message.content,
           model: rec.message.model,
           stopReason: rec.message.stop_reason,
@@ -191,7 +199,8 @@ app.get('/api/sessions/:projectId/:sessionId', (req, res) => {
             cacheReadTokens: usage.cache_read_input_tokens || 0,
             cacheCreation: usage.cache_creation || null
           }
-        });
+        };
+        messages.push(assistantMsg);
       } else if (rec.type === 'system') {
         messages.push({
           type: 'system',
@@ -204,6 +213,68 @@ app.get('/api/sessions/:projectId/:sessionId', (req, res) => {
     }
 
     stats.models = [...stats.models];
+
+    // 计算会话总耗时（毫秒转秒和分钟）
+    if (stats.firstTimestamp && stats.latestTimestamp) {
+      const startTime = new Date(stats.firstTimestamp).getTime();
+      const endTime = new Date(stats.latestTimestamp).getTime();
+      stats.totalDurationMs = endTime - startTime;
+      stats.totalDurationSec = stats.totalDurationMs > 0 ? stats.totalDurationMs / 1000 : 0.1;
+      stats.totalDurationMin = stats.totalDurationSec / 60;
+    } else {
+      stats.totalDurationMs = 0;
+      stats.totalDurationSec = 0;
+      stats.totalDurationMin = 0;
+    }
+
+    // 计算总Token数
+    stats.totalTokens = stats.totalInputTokens + stats.totalOutputTokens +
+                       stats.totalCacheCreationTokens + stats.totalCacheReadTokens;
+
+    // 优化：吞吐量只计算 Input + Output Tokens（排除缓存相关）
+    // 缓存 token 可能非常大，导致吞吐量计算失真
+    const activeTokens = stats.totalInputTokens + stats.totalOutputTokens;
+
+    // 基于有 token 使用的消息计算时间窗口
+    let tokenFirstTimestamp = null;
+    let tokenLastTimestamp = null;
+
+    for (const rec of records) {
+      if (rec.type === 'assistant' && rec.message && rec.message.usage) {
+        const usage = rec.message.usage;
+        const hasActiveTokens = (usage.input_tokens || 0) + (usage.output_tokens || 0) > 0;
+        if (hasActiveTokens && rec.timestamp) {
+          if (!tokenFirstTimestamp) tokenFirstTimestamp = rec.timestamp;
+          tokenLastTimestamp = rec.timestamp;
+        }
+      }
+    }
+
+    if (tokenFirstTimestamp && tokenLastTimestamp) {
+      const tokenStartTime = new Date(tokenFirstTimestamp).getTime();
+      const tokenEndTime = new Date(tokenLastTimestamp).getTime();
+      const tokenDurationMs = tokenEndTime - tokenStartTime;
+      const tokenDurationSec = tokenDurationMs > 0 ? tokenDurationMs / 1000 : 0.1;
+
+      // 只有当时间差大于 100 毫秒时才计算吞吐量
+      stats.throughput = tokenDurationMs > 100 ? activeTokens / tokenDurationSec : 0;
+    } else {
+      stats.throughput = 0;
+    }
+
+    // console.log(`  Final throughput: ${stats.throughput}`);
+
+    // 计算单消息耗时
+    for (const msg of messages) {
+      if (msg.type === 'assistant' && msg.parentUuid) {
+        const userMsg = userMessagesMap.get(msg.parentUuid);
+        if (userMsg) {
+          msg.responseTimeMs = msg.timestampMs - userMsg.timestampMs;
+          msg.responseTimeSec = msg.responseTimeMs > 0 ? msg.responseTimeMs / 1000 : 0;
+        }
+      }
+    }
+
     res.json({ messages, stats });
   } catch (err) {
     res.status(500).json({ error: err.message });
