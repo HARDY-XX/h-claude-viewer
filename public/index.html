@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsdiff/5.2.0/diff.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{--bg:#0d1117;--surface:#161b22;--surface2:#1c2129;--border:#30363d;--text:#e6edf3;--text2:#8b949e;--accent:#58a6ff;--green:#3fb950;--orange:#d29922;--red:#f85149;--purple:#bc8cff}
@@ -101,6 +102,26 @@ details.tool-block .tool-content pre{margin:0;border:none;padding:0;background:t
 .empty-state{display:flex;align-items:center;justify-content:center;height:100%;color:var(--text2);font-size:14px;text-align:center;padding:20px}
 /* 加载 */
 .loading{text-align:center;padding:20px;color:var(--text2);font-size:13px}
+/* 代码差异对比 */
+.diff-container{margin:12px 0;border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--bg)}
+.diff-header{padding:10px 16px;background:var(--surface2);border-bottom:1px solid var(--border);font-size:13px;color:var(--text2);display:flex;justify-content:space-between;align-items:center}
+.diff-file-path{color:var(--text);font-weight:500;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:80%}
+.diff-stats{display:flex;gap:12px;font-size:12px}
+.diff-stat{display:flex;align-items:center;gap:4px}
+.diff-stat.added{color:var(--green)}
+.diff-stat.removed{color:var(--red)}
+.diff-stat.changed{color:var(--accent)}
+.diff-wrapper{display:flex;font-family:'Fira Code',Consolas,monospace;font-size:12px}
+.diff-old,.diff-new{flex:1;min-width:0}
+.diff-old-header,.diff-new-header{padding:8px 12px;background:var(--surface);border-bottom:1px solid var(--border);color:var(--text2);font-weight:500;text-align:center;font-size:11px}
+.diff-line{display:flex;min-height:20px}
+.diff-line-num{padding:0 8px;color:var(--text2);background:var(--surface2);border-right:1px solid var(--border);font-size:11px;width:40px;text-align:right;flex-shrink:0}
+.diff-line-content{padding:0 12px;flex:1;white-space:pre-wrap;word-break:break-all}
+.diff-line.removed{background:rgba(248,81,73,0.1)}
+.diff-line.removed .diff-line-content{background:rgba(248,81,73,0.15);color:var(--red)}
+.diff-line.added{background:rgba(63,185,80,0.1)}
+.diff-line.added .diff-line-content{background:rgba(63,185,80,0.15);color:var(--green)}
+.diff-line.changed .diff-line-content{background:rgba(88,166,255,0.1);color:var(--accent)}
 </style>
 </head>
 <body>
@@ -513,6 +534,25 @@ function renderContent(content) {
     if (block.type === 'text') return renderMarkdown(block.text);
     if (block.type === 'tool_use') {
       const inputStr = JSON.stringify(block.input, null, 2);
+
+      // 检测是否是 Edit/Write 工具调用，需要显示差异对比
+      let diffHtml = '';
+      if ((block.name === 'Edit' || block.name === 'Write' || block.name === 'NotebookEdit') && block.input) {
+        const { old_string, new_string, file_path } = block.input;
+        if (old_string !== undefined && new_string !== undefined) {
+          diffHtml = renderCodeDiff(old_string, new_string, file_path || 'untitled');
+        }
+      }
+
+      // 如果有差异对比，显示在工具块中
+      if (diffHtml) {
+        return `<details class="tool-block" open>
+          <summary>🔧 ${escHtml(block.name)}${block.input.file_path ? ` - ${escHtml(block.input.file_path)}` : ''}</summary>
+          <div class="tool-content">${diffHtml}</div>
+        </details>`;
+      }
+
+      // 默认显示 JSON
       return `<details class="tool-block" open><summary>🔧 ${escHtml(block.name)}</summary>
         <div class="tool-content"><pre><code class="language-json">${escHtml(inputStr)}</code></pre></div></details>`;
     }
@@ -528,6 +568,130 @@ function renderContent(content) {
     return `<details class="tool-block" open><summary>${escHtml(block.type || 'unknown')}</summary>
       <div class="tool-content"><pre><code>${escHtml(JSON.stringify(block, null, 2))}</code></pre></div></details>`;
   }).join('');
+}
+
+// 渲染代码差异对比
+function renderCodeDiff(oldCode, newCode, filePath) {
+  try {
+    // 使用 jsdiff 生成差异
+    const diff = window.Diff.diffLines(oldCode, newCode);
+
+    // 分别构建左右两侧的 HTML
+    let oldHtml = '<div class="diff-old-header">旧代码</div><div class="diff-old">';
+    let newHtml = '<div class="diff-new-header">新代码</div><div class="diff-new">';
+
+    let oldLineNum = 1;
+    let newLineNum = 1;
+
+    diff.forEach(part => {
+      const lines = part.value.split('\n').filter(l => l !== '');
+
+      if (part.removed) {
+        // 删除的行 - 只显示在左侧
+        lines.forEach(line => {
+          oldHtml += `<div class="diff-line removed">
+            <div class="diff-line-num">${oldLineNum++}</div>
+            <div class="diff-line-content">- ${escHtml(line)}</div>
+          </div>`;
+        });
+        // 右侧显示空白占位
+        lines.forEach(() => {
+          newHtml += `<div class="diff-line">
+            <div class="diff-line-num"></div>
+            <div class="diff-line-content"></div>
+          </div>`;
+        });
+      } else if (part.added) {
+        // 新增的行 - 只显示在右侧
+        lines.forEach(line => {
+          newHtml += `<div class="diff-line added">
+            <div class="diff-line-num">${newLineNum++}</div>
+            <div class="diff-line-content">+ ${escHtml(line)}</div>
+          </div>`;
+        });
+        // 左侧显示空白占位
+        lines.forEach(() => {
+          oldHtml += `<div class="diff-line">
+            <div class="diff-line-num"></div>
+            <div class="diff-line-content"></div>
+          </div>`;
+        });
+      } else {
+        // 相同的行 - 两侧都显示
+        lines.forEach(line => {
+          oldHtml += `<div class="diff-line">
+            <div class="diff-line-num">${oldLineNum++}</div>
+            <div class="diff-line-content">${escHtml(line)}</div>
+          </div>`;
+          newHtml += `<div class="diff-line">
+            <div class="diff-line-num">${newLineNum++}</div>
+            <div class="diff-line-content">${escHtml(line)}</div>
+          </div>`;
+        });
+      }
+    });
+
+    oldHtml += '</div>';
+    newHtml += '</div>';
+
+    // 统计变化
+    const stats = calculateDiffStats(oldCode, newCode);
+
+    return `
+      <div class="diff-container">
+        <div class="diff-header">
+          <div class="diff-file-path" title="${escHtml(filePath)}">📄 ${escHtml(filePath)}</div>
+          <div class="diff-stats">
+            <span class="diff-stat added">+${stats.added}</span>
+            <span class="diff-stat removed">-${stats.removed}</span>
+            ${stats.changed > 0 ? `<span class="diff-stat changed">±${stats.changed}</span>` : ''}
+          </div>
+        </div>
+        <div class="diff-wrapper">
+          ${oldHtml}
+          ${newHtml}
+        </div>
+      </div>`;
+  } catch (error) {
+    console.error('渲染差异对比失败:', error);
+    // 降级显示原始 JSON
+    return `<pre><code class="language-json">${escHtml(JSON.stringify({ old_string: oldCode, new_string: newCode }, null, 2))}</code></pre>`;
+  }
+}
+
+// 计算差异统计
+function calculateDiffStats(oldStr, newStr) {
+  const oldLines = oldStr.split('\n');
+  const newLines = newStr.split('\n');
+
+  let added = 0, removed = 0, changed = 0;
+
+  // 简单统计
+  if (oldLines.length === newLines.length) {
+    // 可能是修改
+    for (let i = 0; i < oldLines.length; i++) {
+      if (oldLines[i] !== newLines[i]) changed++;
+    }
+  } else {
+    // 有增减
+    const maxLen = Math.max(oldLines.length, newLines.length);
+    for (let i = 0; i < maxLen; i++) {
+      if (i >= oldLines.length) added++;
+      else if (i >= newLines.length) removed++;
+      else if (oldLines[i] !== newLines[i]) {
+        // 尝试判断是修改还是增删
+        if (newLines.includes(oldLines[i])) {
+          removed++;
+        } else if (oldLines.includes(newLines[i])) {
+          added++;
+        } else {
+          changed++;
+        }
+      }
+    }
+  }
+
+  return { added, removed, changed };
 }
 
 function renderMarkdown(text) {
