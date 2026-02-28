@@ -12,10 +12,13 @@
 :root{--bg:#0d1117;--surface:#161b22;--surface2:#1c2129;--border:#30363d;--text:#e6edf3;--text2:#8b949e;--accent:#58a6ff;--green:#3fb950;--orange:#d29922;--red:#f85149;--purple:#bc8cff}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);height:100vh;overflow:hidden;display:flex}
 /* 三栏布局 */
-#projects-panel{width:260px;min-width:260px;border-right:1px solid var(--border);display:flex;flex-direction:column;height:100vh}
-#sessions-panel{width:300px;min-width:300px;border-right:1px solid var(--border);display:flex;flex-direction:column;height:100vh}
+#projects-panel{width:260px;min-width:260px;border-right:1px solid var(--border);display:flex;flex-direction:column;height:100vh;transition:width .3s ease, min-width .3s ease;position:relative}
+#sessions-panel{width:300px;min-width:300px;border-right:1px solid var(--border);display:flex;flex-direction:column;height:100vh;transition:width .3s ease, min-width .3s ease;position:relative}
 #detail-panel{flex:1;display:flex;flex-direction:column;height:100vh;overflow:hidden}
 .panel-header{padding:14px 16px;border-bottom:1px solid var(--border);font-size:18px;font-weight:600;color:var(--text2);background:var(--surface);flex-shrink:0;display:flex;align-items:center;gap:8px}
+.panel-toggle{padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface2);color:var(--text2);cursor:pointer;flex-shrink:0;transition:all .2s}
+.panel-toggle:hover{background:var(--border);color:var(--text)}
+.panel-toggle .icon{font-size:16px;font-weight:600}
 .panel-header .count{background:var(--border);border-radius:10px;padding:1px 8px;font-size:12px;font-weight:400}
 .panel-list{flex:1;overflow-y:auto;padding:4px}
 .panel-list::-webkit-scrollbar{width:6px}
@@ -103,12 +106,22 @@ details.tool-block .tool-content pre{margin:0;border:none;padding:0;background:t
 <body>
 
 <div id="projects-panel">
-  <div class="panel-header">项目列表 <span class="count" id="project-count">0</span></div>
+  <div class="panel-header">
+    项目列表 <span class="count" id="project-count">0</span>
+    <button class="panel-toggle" onclick="togglePanel('projects')" title="隐藏/显示项目列表">
+      <span class="icon" id="projects-toggle-icon">❮</span>
+    </button>
+  </div>
   <div class="panel-list" id="project-list"><div class="loading">加载中...</div></div>
 </div>
 
 <div id="sessions-panel">
-  <div class="panel-header">对话列表 <span class="count" id="session-count">0</span></div>
+  <div class="panel-header">
+    对话列表 <span class="count" id="session-count">0</span>
+    <button class="panel-toggle" onclick="togglePanel('sessions')" title="隐藏/显示对话列表">
+      <span class="icon" id="sessions-toggle-icon">❮</span>
+    </button>
+  </div>
   <div class="panel-list" id="session-list"><div class="empty-state">选择一个项目</div></div>
 </div>
 
@@ -141,12 +154,42 @@ marked.setOptions({
   breaks: true
 });
 
+// 全局状态变量
 let currentProject = null;
 let currentSession = null;
 let currentMessageCount = 0;
 let autoRefreshTimers = {};
-let autoScrollToBottom = true; // 自动滚动到底部开关
-const REFRESH_INTERVAL = 3000; // 3秒轮询
+let autoScrollToBottom = true;
+const REFRESH_INTERVAL = 3000;
+
+// 面板隐藏状态
+let isProjectsHidden = false;
+let isSessionsHidden = false;
+
+// 页面加载完成后的初始化
+console.log('=== 页面脚本已加载 ===');
+console.log('togglePanel 函数:', typeof togglePanel);
+
+// 测试按钮点击
+window.addEventListener('DOMContentLoaded', () => {
+  console.log('=== DOM 加载完成 ===');
+  const projectBtn = document.querySelector('#projects-panel .panel-toggle');
+  const sessionBtn = document.querySelector('#sessions-panel .panel-toggle');
+  console.log('项目面板按钮:', projectBtn);
+  console.log('对话面板按钮:', sessionBtn);
+
+  if (projectBtn) {
+    projectBtn.addEventListener('click', () => {
+      console.log('项目面板按钮被点击（通过事件监听器）');
+    });
+  }
+
+  if (sessionBtn) {
+    sessionBtn.addEventListener('click', () => {
+      console.log('对话面板按钮被点击（通过事件监听器）');
+    });
+  }
+});
 
 // 格式化数字
 function fmtNum(n) {
@@ -207,6 +250,98 @@ function toggleAutoScroll() {
     btn.classList.toggle('active', autoScrollToBottom);
     btn.title = autoScrollToBottom ? '新消息自动滚动到底部' : '新消息不会自动滚动';
   }
+}
+
+// 切换面板显示/隐藏
+function togglePanel(panel) {
+  console.log('=== togglePanel 被调用 ===');
+  console.log('panel:', panel);
+  console.log('isProjectsHidden (before):', isProjectsHidden);
+  console.log('isSessionsHidden (before):', isSessionsHidden);
+
+  const projectsPanel = document.getElementById('projects-panel');
+  const sessionsPanel = document.getElementById('sessions-panel');
+
+  console.log('projectsPanel:', projectsPanel);
+  console.log('sessionsPanel:', sessionsPanel);
+
+  if (panel === 'projects') {
+    isProjectsHidden = !isProjectsHidden;
+    console.log('isProjectsHidden (after toggle):', isProjectsHidden);
+
+    const icon = document.getElementById('projects-toggle-icon');
+    const header = projectsPanel.querySelector('.panel-header');
+    const list = projectsPanel.querySelector('.panel-list');
+    const headerText = header.childNodes[0]; // 标题文字节点
+    const count = header.querySelector('.count');
+
+    console.log('icon:', icon);
+    console.log('header:', header);
+    console.log('list:', list);
+    console.log('headerText:', headerText);
+    console.log('count:', count);
+
+    if (isProjectsHidden) {
+      console.log('执行隐藏操作');
+      projectsPanel.style.width = '48px';
+      projectsPanel.style.minWidth = '48px';
+      icon.textContent = '❯';
+      list.style.display = 'none';
+      headerText.textContent = '';
+      count.style.display = 'none';
+      header.style.justifyContent = 'center';
+    } else {
+      console.log('执行显示操作');
+      projectsPanel.style.width = '260px';
+      projectsPanel.style.minWidth = '260px';
+      icon.textContent = '❮';
+      list.style.display = 'block';
+      headerText.textContent = '项目列表 ';
+      count.style.display = 'inline-block';
+      header.style.justifyContent = 'flex-start';
+    }
+  }
+
+  if (panel === 'sessions') {
+    isSessionsHidden = !isSessionsHidden;
+    console.log('isSessionsHidden (after toggle):', isSessionsHidden);
+
+    const icon = document.getElementById('sessions-toggle-icon');
+    const header = sessionsPanel.querySelector('.panel-header');
+    const list = sessionsPanel.querySelector('.panel-list');
+    const headerText = header.childNodes[0]; // 标题文字节点
+    const count = header.querySelector('.count');
+
+    console.log('icon:', icon);
+    console.log('header:', header);
+    console.log('list:', list);
+    console.log('headerText:', headerText);
+    console.log('count:', count);
+
+    if (isSessionsHidden) {
+      console.log('执行隐藏操作');
+      sessionsPanel.style.width = '48px';
+      sessionsPanel.style.minWidth = '48px';
+      icon.textContent = '❯';
+      list.style.display = 'none';
+      headerText.textContent = '';
+      count.style.display = 'none';
+      header.style.justifyContent = 'center';
+    } else {
+      console.log('执行显示操作');
+      sessionsPanel.style.width = '300px';
+      sessionsPanel.style.minWidth = '300px';
+      icon.textContent = '❮';
+      list.style.display = 'block';
+      headerText.textContent = '对话列表 ';
+      count.style.display = 'inline-block';
+      header.style.justifyContent = 'flex-start';
+    }
+  }
+
+  console.log('=== togglePanel 执行完毕 ===');
+  // 更新滚动按钮
+  setTimeout(updateScrollButtons, 300);
 }
 
 // 加载项目列表
@@ -280,10 +415,7 @@ function renderStats(stats) {
     ${stats.sessionId ? `<div class="stat-item">Session:<span title="${stats.sessionId}">${fmtSessionId(stats.sessionId)}</span></div>` : ''}
     <div class="stat-item throughput">Throughput:<span>${Math.round(stats.throughput)} token/s</span></div>
     <div class="stat-item duration">耗时:<span>${fmtDuration(stats.totalDurationSec)}</span></div>
-    <div class="scroll-buttons">
-      <button class="scroll-btn" onclick="scrollToTop()" title="滚动到顶部">↑</button>
-      <button class="scroll-btn" onclick="scrollToBottom()" title="滚动到底部">↓</button>
-    </div>
+   
   `;
 }
 
