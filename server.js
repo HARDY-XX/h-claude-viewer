@@ -247,8 +247,8 @@ app.get('/api/sessions/:projectId/:sessionId', (req, res) => {
       }
     }
 
-    // 计算吞吐量：总 output tokens ÷ 总响应耗时（秒）
-    // 只计算实际生成 token 的时间，不包含用户思考/空闲时间
+    // 计算吞吐量：Output Tokens ÷ 总响应耗时（秒）
+    // 只计算服务器返回的 token（Output Tokens），不计算输入的 token
     const totalResponseTimeSec = totalResponseTimeMs > 0 ? totalResponseTimeMs / 1000 : 0;
     stats.throughput = (totalResponseTimeSec > 0 && stats.totalOutputTokens > 0)
       ? stats.totalOutputTokens / totalResponseTimeSec
