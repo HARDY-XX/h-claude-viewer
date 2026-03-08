@@ -49,6 +49,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 .scroll-btn:hover{background:var(--border);color:var(--text);transform:translateY(-50%) scale(1.1)}
 .scroll-btn:active{transform:translateY(-50%) scale(0.95)}
 .scroll-btn.hidden{display:none}
+/* 类型过滤器工具栏 */
+#type-filter-bar{padding:8px 20px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0;display:none;flex-wrap:wrap;gap:8px;align-items:center}
+.type-filter-btn{padding:4px 10px;border-radius:4px;background:var(--surface2);border:1px solid var(--border);color:var(--text2);cursor:pointer;font-size:12px;font-weight:500;transition:all .2s;display:flex;align-items:center;gap:4px}
+.type-filter-btn:hover{background:var(--border);color:var(--text)}
+.type-filter-btn.active{background:rgba(88,166,255,.15);border-color:var(--accent);color:var(--accent)}
+.type-filter-btn .count{background:var(--border);border-radius:8px;padding:0 5px;font-size:10px;margin-left:2px}
+.type-filter-btn.active .count{background:rgba(88,166,255,.3)}
 /* 自动滚动开关按钮 */
 .auto-scroll-toggle{padding:6px 12px;border-radius:6px;background:var(--surface2);border:1px solid var(--border);color:var(--text2);cursor:pointer;font-size:12px;font-weight:500;transition:all .2s;display:flex;align-items:center;gap:6px}
 .auto-scroll-toggle:hover{background:var(--border);color:var(--text)}
@@ -98,6 +105,11 @@ details.tool-block summary{padding:8px 12px;background:var(--surface2);cursor:po
 details.tool-block summary:hover{background:var(--border)}
 details.tool-block .tool-content{padding:10px 12px;font-size:12px;max-height:400px;overflow:auto;background:var(--bg)}
 details.tool-block .tool-content pre{margin:0;border:none;padding:0;background:transparent}
+/* 消息内容折叠 */
+details.msg-details{margin:8px 0;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+details.msg-details summary{padding:8px 12px;background:var(--surface2);cursor:pointer;font-size:12px;color:var(--text2);user-select:none}
+details.msg-details summary:hover{background:var(--border)}
+details.msg-details .msg-body{padding:10px 12px;font-size:14px;background:var(--bg)}
 /* 空状态 */
 .empty-state{display:flex;align-items:center;justify-content:center;height:100%;color:var(--text2);font-size:14px;text-align:center;padding:20px}
 /* 加载 */
@@ -157,6 +169,7 @@ details.tool-block .tool-content pre{margin:0;border:none;padding:0;background:t
       <button class="scroll-btn" onclick="scrollToBottom()" title="滚动到底部">↓</button>
     </div>
   </div>
+  <div id="type-filter-bar"></div>
   <div id="messages">
     <div class="empty-state">选择一个对话查看详情</div>
     <div class="scroll-buttons" style="position:absolute">
@@ -186,6 +199,45 @@ const REFRESH_INTERVAL = 3000;
 // 面板隐藏状态
 let isProjectsHidden = false;
 let isSessionsHidden = false;
+
+// 类型过滤器配置
+const MESSAGE_TYPES = {
+  user: { label: '用户输入', icon: '👤', defaultOpen: true },
+  assistant: { label: 'AI回复', icon: '🤖', defaultOpen: true },
+  system: { label: '系统消息', icon: '⚙️', defaultOpen: true },
+  tool_use: { label: '工具调用', icon: '🔧', defaultOpen: true },
+  thinking: { label: '思考', icon: '💭', defaultOpen: true }
+};
+
+// 从localStorage加载类型过滤器配置
+function loadTypeFilters() {
+  try {
+    const saved = localStorage.getItem('typeFilters');
+    if (saved) {
+      return JSON.parse(saved);
+    }
+  } catch (e) {
+    console.error('加载类型过滤器配置失败:', e);
+  }
+  // 默认全部展开
+  const defaults = {};
+  for (const key in MESSAGE_TYPES) {
+    defaults[key] = MESSAGE_TYPES[key].defaultOpen;
+  }
+  return defaults;
+}
+
+// 保存类型过滤器配置到localStorage
+function saveTypeFilters(filters) {
+  try {
+    localStorage.setItem('typeFilters', JSON.stringify(filters));
+  } catch (e) {
+    console.error('保存类型过滤器配置失败:', e);
+  }
+}
+
+// 当前类型过滤器状态
+let typeFilters = loadTypeFilters();
 
 // 页面加载完成后的初始化
 console.log('=== 页面脚本已加载 ===');
@@ -416,6 +468,158 @@ async function selectSession(id) {
   startMessagesRefresh();
 }
 
+// 统计各类型的消息数量
+function countMessageTypes(messages) {
+  const counts = {};
+  for (const key in MESSAGE_TYPES) {
+    counts[key] = 0;
+  }
+
+  messages.forEach(msg => {
+    if (msg.type === 'user') counts.user++;
+    else if (msg.type === 'assistant') {
+      counts.assistant++;
+      // 检查assistant消息中是否包含tool_use、thinking
+      if (msg.content && Array.isArray(msg.content)) {
+        msg.content.forEach(block => {
+          if (block.type === 'tool_use') counts.tool_use++;
+          else if (block.type === 'thinking') counts.thinking++;
+        });
+      }
+    }
+    else if (msg.type === 'system') counts.system++;
+  });
+
+  return counts;
+}
+
+// 渲染类型过滤器工具栏
+function renderTypeFilterBar(messages) {
+  const bar = document.getElementById('type-filter-bar');
+  const typeCounts = countMessageTypes(messages);
+
+  let html = '';
+  for (const [key, config] of Object.entries(MESSAGE_TYPES)) {
+    const isActive = typeFilters[key];
+    const count = typeCounts[key] || 0;
+    html += `<button class="type-filter-btn ${isActive ? 'active' : ''}" data-type="${key}" onclick="toggleTypeFilter('${key}')" title="${isActive ? '点击折叠' : '点击展开'}">
+      ${config.icon} ${config.label} <span class="count">${count}</span>
+    </button>`;
+  }
+
+  bar.innerHTML = html;
+  bar.style.display = 'flex';
+}
+
+// 切换类型过滤器
+function toggleTypeFilter(type) {
+  typeFilters[type] = !typeFilters[type];
+  saveTypeFilters(typeFilters);
+
+  // 更新按钮状态
+  const btn = document.querySelector(`.type-filter-btn[data-type="${type}"]`);
+  if (btn) {
+    btn.classList.toggle('active', typeFilters[type]);
+    btn.title = typeFilters[type] ? '点击折叠' : '点击展开';
+    // 更新按钮上的数量显示（使用DOM中的实际数量）
+    updateButtonCountFromDOM(btn, type);
+  }
+
+  // 重新应用过滤器到当前消息
+  applyTypeFiltersToMessages();
+}
+
+// 从DOM中更新按钮的数量显示
+function updateButtonCountFromDOM(btn, type) {
+  const container = document.getElementById('messages');
+  if (!container) return;
+
+  let count = 0;
+  if (type === 'user') {
+    count = container.querySelectorAll('.message.user').length;
+  } else if (type === 'assistant') {
+    count = container.querySelectorAll('.message.assistant').length;
+  } else if (type === 'system') {
+    count = container.querySelectorAll('.message.system').length;
+  } else if (type === 'tool_use') {
+    count = container.querySelectorAll('details.tool-block[data-block-type="tool_use"]').length;
+  } else if (type === 'thinking') {
+    count = container.querySelectorAll('details.tool-block[data-block-type="thinking"]').length;
+  }
+
+  // 更新按钮文本
+  const config = MESSAGE_TYPES[type];
+  if (config) {
+    btn.innerHTML = `${config.icon} ${config.label} <span class="count">${count}</span>`;
+  }
+}
+
+// 更新所有按钮的数量显示
+function updateAllButtonCountsFromDOM() {
+  const container = document.getElementById('messages');
+  if (!container) return;
+
+  const types = ['user', 'assistant', 'system', 'tool_use', 'thinking'];
+  types.forEach(type => {
+    const btn = document.querySelector(`.type-filter-btn[data-type="${type}"]`);
+    if (btn) {
+      updateButtonCountFromDOM(btn, type);
+    }
+  });
+}
+
+// 应用类型过滤器到当前消息
+function applyTypeFiltersToMessages() {
+  const container = document.getElementById('messages');
+  if (!container) return;
+
+  // 处理 user 和 assistant 消息的展开/折叠
+  const msgDetails = container.querySelectorAll('details.msg-details');
+  msgDetails.forEach(details => {
+    const msgType = details.getAttribute('data-msg-type');
+    const summary = details.querySelector('summary');
+
+    if (msgType === 'user') {
+      if (typeFilters.user) {
+        details.setAttribute('open', '');
+        if (summary) summary.textContent = '▼ 内容';
+      } else {
+        details.removeAttribute('open');
+        if (summary) summary.textContent = '▶ 内容';
+      }
+    } else if (msgType === 'assistant') {
+      if (typeFilters.assistant) {
+        details.setAttribute('open', '');
+        if (summary) summary.textContent = '▼ 内容';
+      } else {
+        details.removeAttribute('open');
+        if (summary) summary.textContent = '▶ 内容';
+      }
+    }
+  });
+
+  // 处理 tool_use、thinking 的展开/折叠
+  const toolBlocks = container.querySelectorAll('details.tool-block[data-block-type]');
+
+  toolBlocks.forEach(block => {
+    const blockType = block.getAttribute('data-block-type');
+
+    if (blockType === 'tool_use') {
+      if (typeFilters.tool_use) {
+        block.setAttribute('open', '');
+      } else {
+        block.removeAttribute('open');
+      }
+    } else if (blockType === 'thinking') {
+      if (typeFilters.thinking) {
+        block.setAttribute('open', '');
+      } else {
+        block.removeAttribute('open');
+      }
+    }
+  });
+}
+
 // 渲染统计栏
 function renderStats(stats) {
   const bar = document.getElementById('stats-bar');
@@ -462,6 +666,8 @@ function renderMessages(messages) {
       <button class="scroll-btn" onclick="scrollToTop()" title="滚动到顶部">↑</button>
       <button class="scroll-btn" onclick="scrollToBottom()" title="滚动到底部">↓</button>
     </div>`;
+    // 隐藏类型过滤器
+    document.getElementById('type-filter-bar').style.display = 'none';
     return;
   }
 
@@ -473,12 +679,27 @@ function renderMessages(messages) {
   el.querySelectorAll('pre code').forEach(block => {
     try { hljs.highlightElement(block); } catch {}
   });
+
+  // 渲染类型过滤器
+  renderTypeFilterBar(messages);
+
+  // 使用DOM中的实际数量更新按钮显示
+  setTimeout(() => {
+    updateAllButtonCountsFromDOM();
+    applyTypeFiltersToMessages();
+  }, 100);
+
   // 更新按钮可见性
   setTimeout(updateScrollButtons, 100);
 }
 
 function renderMessage(msg) {
   const sidechainClass = msg.isSidechain ? ' sidechain' : '';
+
+  // 根据typeFilters设置展开/折叠状态
+  const userOpen = typeFilters.user ? 'open' : '';
+  const assistantOpen = typeFilters.assistant ? 'open' : '';
+
   if (msg.type === 'system') {
     return `<div class="message system${sidechainClass}">
       <div class="msg-header"><span class="msg-role system">SYSTEM${msg.subtype ? ' · ' + msg.subtype : ''}</span><span class="msg-time">${fmtTimeFull(msg.timestamp)}</span></div>
@@ -489,7 +710,10 @@ function renderMessage(msg) {
   if (msg.type === 'user') {
     return `<div class="message user${sidechainClass}">
       <div class="msg-header"><span class="msg-role user">USER</span><span class="msg-time">${fmtTimeFull(msg.timestamp)}</span></div>
-      <div class="msg-body">${renderContent(msg.content)}</div>
+      <details class="msg-details" data-msg-type="user" ${userOpen}>
+        <summary>${typeFilters.user ? '▼' : '▶'} 内容</summary>
+        <div class="msg-body">${renderContent(msg.content)}</div>
+      </details>
     </div>`;
   }
 
@@ -506,7 +730,13 @@ function renderMessage(msg) {
     }
     let responseTimeHtml = '';
     if (msg.responseTimeSec !== undefined) {
-      responseTimeHtml = `<span class="msg-response-time" title="从用户消息到回复耗时">${msg.responseTimeSec.toFixed(2)} 秒</span>`;
+      const responseTimeTitleMap = {
+        direct_user_parent: '从关联用户消息到回复耗时',
+        ancestor_user_chain: '从上游祖先用户消息到回复耗时',
+        previous_user_fallback: '基于最近用户消息估算的回复耗时'
+      };
+      const responseTimeTitle = responseTimeTitleMap[msg.responseTimeSource] || '从用户消息到回复耗时';
+      responseTimeHtml = `<span class="msg-response-time" title="${responseTimeTitle}">${msg.responseTimeSec.toFixed(2)} 秒</span>`;
     }
     return `<div class="message assistant${sidechainClass}">
       <div class="msg-header">
@@ -516,7 +746,10 @@ function renderMessage(msg) {
         ${responseTimeHtml}
         ${msg.stopReason ? `<span class="msg-stop">${msg.stopReason}</span>` : ''}
       </div>
-      <div class="msg-body">${renderContent(msg.content)}</div>
+      <details class="msg-details" data-msg-type="assistant" ${assistantOpen}>
+        <summary>${typeFilters.assistant ? '▼' : '▶'} 内容</summary>
+        <div class="msg-body">${renderContent(msg.content)}</div>
+      </details>
       ${tokensHtml}
     </div>`;
   }
@@ -534,6 +767,7 @@ function renderContent(content) {
     if (block.type === 'text') return renderMarkdown(block.text);
     if (block.type === 'tool_use') {
       const inputStr = JSON.stringify(block.input, null, 2);
+      const isOpen = typeFilters.tool_use ? 'open' : '';
 
       // 检测是否是 Edit/Write 工具调用，需要显示差异对比
       let diffHtml = '';
@@ -546,23 +780,19 @@ function renderContent(content) {
 
       // 如果有差异对比，显示在工具块中
       if (diffHtml) {
-        return `<details class="tool-block" open>
+        return `<details class="tool-block" data-block-type="tool_use" ${isOpen}>
           <summary>🔧 ${escHtml(block.name)}${block.input.file_path ? ` - ${escHtml(block.input.file_path)}` : ''}</summary>
           <div class="tool-content">${diffHtml}</div>
         </details>`;
       }
 
       // 默认显示 JSON
-      return `<details class="tool-block" open><summary>🔧 ${escHtml(block.name)}</summary>
+      return `<details class="tool-block" data-block-type="tool_use" ${isOpen}><summary>🔧 ${escHtml(block.name)}</summary>
         <div class="tool-content"><pre><code class="language-json">${escHtml(inputStr)}</code></pre></div></details>`;
     }
-    if (block.type === 'tool_result') {
-      const resultText = typeof block.content === 'string' ? block.content : JSON.stringify(block.content, null, 2);
-      return `<details class="tool-block" open><summary>📋 Tool Result (${escHtml(block.tool_use_id || '')})</summary>
-        <div class="tool-content"><pre><code>${escHtml(resultText)}</code></pre></div></details>`;
-    }
     if (block.type === 'thinking') {
-      return `<details class="tool-block" open><summary>💭 Thinking</summary>
+      const isOpen = typeFilters.thinking ? 'open' : '';
+      return `<details class="tool-block" data-block-type="thinking" ${isOpen}><summary>💭 Thinking</summary>
         <div class="tool-content">${renderMarkdown(block.thinking || '')}</div></details>`;
     }
     return `<details class="tool-block" open><summary>${escHtml(block.type || 'unknown')}</summary>

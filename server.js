@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const app = express();
-const PORT = 3000;
+const PORT = 13001;
 const PROJECTS_DIR = path.join(__dirname, '..');
 
 app.use(express.static(path.join(__dirname, 'public')));
@@ -24,6 +24,12 @@ function parseJsonlLine(line) {
 function readJsonlFile(filePath) {
   const content = fs.readFileSync(filePath, 'utf-8');
   return content.split('\n').map(parseJsonlLine).filter(Boolean);
+}
+
+function getTimestampMs(timestamp) {
+  if (!timestamp) return null;
+  const ms = new Date(timestamp).getTime();
+  return Number.isFinite(ms) ? ms : null;
 }
 
 // 获取文件夹内所有 .jsonl 文件
@@ -146,8 +152,13 @@ app.get('/api/sessions/:projectId/:sessionId', (req, res) => {
 
     const messages = [];
     const userMessagesMap = new Map();
+    const rawRecordsByUuid = new Map();
+    const assistantEntries = [];
+    const MAX_FALLBACK_RESPONSE_TIME_MS = 60 * 60 * 1000;
 
     for (const rec of records) {
+      if (rec.uuid) rawRecordsByUuid.set(rec.uuid, rec);
+
       if (rec.timestamp) {
         if (!stats.firstTimestamp) stats.firstTimestamp = rec.timestamp;
         stats.latestTimestamp = rec.timestamp;
@@ -161,7 +172,7 @@ app.get('/api/sessions/:projectId/:sessionId', (req, res) => {
           uuid: rec.uuid,
           parentUuid: rec.parentUuid,
           timestamp: rec.timestamp,
-          timestampMs: new Date(rec.timestamp).getTime(),
+          timestampMs: getTimestampMs(rec.timestamp),
           content: rec.message.content,
           cwd: rec.cwd,
           version: rec.version,
@@ -187,7 +198,7 @@ app.get('/api/sessions/:projectId/:sessionId', (req, res) => {
           uuid: rec.uuid,
           parentUuid: rec.parentUuid,
           timestamp: rec.timestamp,
-          timestampMs: new Date(rec.timestamp).getTime(),
+          timestampMs: getTimestampMs(rec.timestamp),
           content: rec.message.content,
           model: rec.message.model,
           stopReason: rec.message.stop_reason,
@@ -201,6 +212,7 @@ app.get('/api/sessions/:projectId/:sessionId', (req, res) => {
           }
         };
         messages.push(assistantMsg);
+        assistantEntries.push({ msg: assistantMsg, index: messages.length - 1 });
       } else if (rec.type === 'system') {
         messages.push({
           type: 'system',
@@ -212,13 +224,50 @@ app.get('/api/sessions/:projectId/:sessionId', (req, res) => {
       }
     }
 
+    function getAncestorUserMessage(parentUuid) {
+      const visited = new Set();
+      let currentUuid = parentUuid;
+      let depth = 0;
+
+      while (currentUuid && depth < 50 && !visited.has(currentUuid)) {
+        visited.add(currentUuid);
+        const rawRec = rawRecordsByUuid.get(currentUuid);
+        if (!rawRec) return null;
+        if (rawRec.type === 'user') {
+          return userMessagesMap.get(rawRec.uuid) || null;
+        }
+        currentUuid = rawRec.parentUuid;
+        depth++;
+      }
+
+      return null;
+    }
+
+    function getPreviousUserFallback(startIndex, assistantMsg) {
+      if (!Number.isFinite(assistantMsg.timestampMs)) return null;
+
+      for (let i = startIndex - 1; i >= 0; i--) {
+        const candidate = messages[i];
+        if (candidate.type !== 'user') continue;
+        if (!Number.isFinite(candidate.timestampMs)) continue;
+
+        const responseTimeMs = assistantMsg.timestampMs - candidate.timestampMs;
+        if (responseTimeMs < 0) continue;
+        if (responseTimeMs > MAX_FALLBACK_RESPONSE_TIME_MS) return null;
+
+        return candidate;
+      }
+
+      return null;
+    }
+
     stats.models = [...stats.models];
 
     // 计算会话总耗时（毫秒转秒和分钟）
     if (stats.firstTimestamp && stats.latestTimestamp) {
-      const startTime = new Date(stats.firstTimestamp).getTime();
-      const endTime = new Date(stats.latestTimestamp).getTime();
-      stats.totalDurationMs = endTime - startTime;
+      const startTime = getTimestampMs(stats.firstTimestamp);
+      const endTime = getTimestampMs(stats.latestTimestamp);
+      stats.totalDurationMs = Number.isFinite(startTime) && Number.isFinite(endTime) ? endTime - startTime : 0;
       stats.totalDurationSec = stats.totalDurationMs > 0 ? stats.totalDurationMs / 1000 : 0.1;
       stats.totalDurationMin = stats.totalDurationSec / 60;
     } else {
@@ -233,22 +282,54 @@ app.get('/api/sessions/:projectId/:sessionId', (req, res) => {
 
     // 计算单消息耗时
     let totalResponseTimeMs = 0;
-    for (const msg of messages) {
-      if (msg.type === 'assistant' && msg.parentUuid) {
-        const userMsg = userMessagesMap.get(msg.parentUuid);
+    for (const { msg, index } of assistantEntries) {
+      let userMsg = null;
+      let responseTimeSource = null;
+
+      if (msg.parentUuid) {
+        userMsg = userMessagesMap.get(msg.parentUuid) || null;
         if (userMsg) {
-          msg.responseTimeMs = msg.timestampMs - userMsg.timestampMs;
-          msg.responseTimeSec = msg.responseTimeMs > 0 ? msg.responseTimeMs / 1000 : 0;
-          // 累加响应时间
-          if (msg.responseTimeMs > 0) {
-            totalResponseTimeMs += msg.responseTimeMs;
-          }
+          responseTimeSource = 'direct_user_parent';
         }
+      }
+
+      if (!userMsg && msg.parentUuid) {
+        userMsg = getAncestorUserMessage(msg.parentUuid);
+        if (userMsg) {
+          responseTimeSource = 'ancestor_user_chain';
+        }
+      }
+
+      if (!userMsg) {
+        userMsg = getPreviousUserFallback(index, msg);
+        if (userMsg) {
+          responseTimeSource = 'previous_user_fallback';
+        }
+      }
+
+      if (!userMsg || !Number.isFinite(msg.timestampMs) || !Number.isFinite(userMsg.timestampMs)) {
+        continue;
+      }
+
+      const responseTimeMs = msg.timestampMs - userMsg.timestampMs;
+      if (responseTimeMs < 0) {
+        continue;
+      }
+      if (responseTimeSource === 'previous_user_fallback' && responseTimeMs > MAX_FALLBACK_RESPONSE_TIME_MS) {
+        continue;
+      }
+
+      msg.responseTimeMs = responseTimeMs;
+      msg.responseTimeSec = responseTimeMs / 1000;
+      msg.responseTimeSource = responseTimeSource;
+
+      if (responseTimeMs > 0 && responseTimeSource !== 'previous_user_fallback') {
+        totalResponseTimeMs += responseTimeMs;
       }
     }
 
-    // 计算吞吐量：总 output tokens ÷ 总响应耗时（秒）
-    // 只计算实际生成 token 的时间，不包含用户思考/空闲时间
+    // 计算吞吐量：Output Tokens ÷ 总响应耗时（秒）
+    // 只计算服务器返回的 token（Output Tokens），不计算输入的 token
     const totalResponseTimeSec = totalResponseTimeMs > 0 ? totalResponseTimeMs / 1000 : 0;
     stats.throughput = (totalResponseTimeSec > 0 && stats.totalOutputTokens > 0)
       ? stats.totalOutputTokens / totalResponseTimeSec
