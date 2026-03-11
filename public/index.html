@@ -114,6 +114,11 @@ details.msg-details .msg-body{padding:10px 12px;font-size:14px;background:var(--
 .empty-state{display:flex;align-items:center;justify-content:center;height:100%;color:var(--text2);font-size:14px;text-align:center;padding:20px}
 /* 加载 */
 .loading{text-align:center;padding:20px;color:var(--text2);font-size:13px}
+/* 加载更多 */
+.load-more{margin:8px 6px 12px;display:flex;justify-content:center}
+.load-more button{background:var(--surface2);border:1px solid var(--border);color:var(--text2);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;transition:all .2s}
+.load-more button:hover{background:var(--border);color:var(--text)}
+.load-more button:active{transform:scale(0.98)}
 /* 代码差异对比 */
 .diff-container{margin:12px 0;border:1px solid var(--border);border-radius:6px;overflow:hidden;background:var(--bg)}
 .diff-header{padding:10px 16px;background:var(--surface2);border-bottom:1px solid var(--border);font-size:13px;color:var(--text2);display:flex;justify-content:space-between;align-items:center}
@@ -195,6 +200,12 @@ let currentMessageCount = 0;
 let autoRefreshTimers = {};
 let autoScrollToBottom = true;
 const REFRESH_INTERVAL = 3000;
+const DEFAULT_VISIBLE_COUNT = 15;
+const ITEM_ESTIMATED_HEIGHT = 46;
+let projectsCache = [];
+let sessionsCache = [];
+let projectsVisibleCount = DEFAULT_VISIBLE_COUNT;
+let sessionsVisibleCount = DEFAULT_VISIBLE_COUNT;
 
 // 面板隐藏状态
 let isProjectsHidden = false;
@@ -280,6 +291,24 @@ function fmtTime(ts) {
 function fmtTimeFull(ts) {
   if (!ts) return '';
   return new Date(ts).toLocaleString('zh-CN');
+}
+
+function getAdaptiveStep(container) {
+  if (!container) return DEFAULT_VISIBLE_COUNT;
+  const estimate = Math.ceil(container.clientHeight / ITEM_ESTIMATED_HEIGHT);
+  return Math.max(DEFAULT_VISIBLE_COUNT, estimate);
+}
+
+function ensureVisibleCountForSelection(list, selectedId, visibleCount) {
+  if (!selectedId) return visibleCount;
+  const index = list.findIndex(item => item.id === selectedId);
+  if (index === -1) return visibleCount;
+  return index >= visibleCount ? index + 1 : visibleCount;
+}
+
+function buildLoadMoreHtml(loadedCount, totalCount, onClick) {
+  if (loadedCount >= totalCount) return '';
+  return `<div class="load-more"><button onclick="${onClick}">加载更多（${loadedCount}/${totalCount}）</button></div>`;
 }
 
 // 更新滚动按钮可见性
@@ -422,11 +451,13 @@ async function loadProjects() {
   const res = await fetch('/api/projects');
   const projects = await res.json();
   const el = document.getElementById('project-list');
+  projectsCache = projects;
+  projectsVisibleCount = DEFAULT_VISIBLE_COUNT;
   document.getElementById('project-count').textContent = projects.length;
 
   if (!projects.length) { el.innerHTML = '<div class="empty-state">没有找到项目</div>'; return; }
 
-  renderProjectList(projects, el);
+  renderProjectList(projectsCache, el);
 }
 
 // 选择项目
@@ -443,11 +474,13 @@ async function selectProject(id) {
   const res = await fetch(`/api/projects/${encodeURIComponent(id)}/sessions`);
   const sessions = await res.json();
   const el = document.getElementById('session-list');
+  sessionsCache = sessions;
+  sessionsVisibleCount = DEFAULT_VISIBLE_COUNT;
   document.getElementById('session-count').textContent = sessions.length;
 
   if (!sessions.length) { el.innerHTML = '<div class="empty-state">没有对话记录</div>'; return; }
 
-  renderSessionList(sessions, el);
+  renderSessionList(sessionsCache, el);
   startSessionsRefresh();
 }
 
@@ -941,12 +974,18 @@ function startProjectsRefresh() {
       const res = await fetch('/api/projects');
       const projects = await res.json();
       const list = document.getElementById('project-list');
-      const oldCount = list.children.length;
-      // 只在数量或顺序变化时更新（避免闪烁）
       const newIds = projects.map(p => p.id).join(',');
-      const oldIds = [...list.children].map(el => el.dataset.id).join(',');
+      const oldIds = projectsCache.map(p => p.id).join(',');
       if (newIds !== oldIds) {
-        renderProjectList(projects, list);
+        const scrollTop = list ? list.scrollTop : 0;
+        projectsCache = projects;
+        document.getElementById('project-count').textContent = projects.length;
+        if (!projects.length) {
+          if (list) list.innerHTML = '<div class="empty-state">没有找到项目</div>';
+          return;
+        }
+        renderProjectList(projectsCache, list);
+        if (list) list.scrollTop = scrollTop;
       }
     } catch {}
   }, REFRESH_INTERVAL);
@@ -962,9 +1001,17 @@ function startSessionsRefresh() {
       const sessions = await res.json();
       const list = document.getElementById('session-list');
       const newIds = sessions.map(s => s.id).join(',');
-      const oldIds = [...list.children].map(el => el.dataset.id).join(',');
+      const oldIds = sessionsCache.map(s => s.id).join(',');
       if (newIds !== oldIds) {
-        renderSessionList(sessions, list);
+        const scrollTop = list ? list.scrollTop : 0;
+        sessionsCache = sessions;
+        document.getElementById('session-count').textContent = sessions.length;
+        if (!sessions.length) {
+          if (list) list.innerHTML = '<div class="empty-state">没有对话记录</div>';
+          return;
+        }
+        renderSessionList(sessionsCache, list);
+        if (list) list.scrollTop = scrollTop;
       }
     } catch {}
   }, REFRESH_INTERVAL);
@@ -1008,19 +1055,41 @@ function startMessagesRefresh() {
 }
 
 function renderProjectList(projects, list) {
-  list.innerHTML = projects.map(p => `
+  if (!list) return;
+  projectsVisibleCount = ensureVisibleCountForSelection(projects, currentProject, projectsVisibleCount);
+  const visibleProjects = projects.slice(0, projectsVisibleCount);
+  const itemsHtml = visibleProjects.map(p => `
     <div class="project-item ${p.id === currentProject ? 'active' : ''}" data-id="${escHtml(p.id)}" onclick="selectProject('${escHtml(p.id)}')">
       <div class="name" title="${escHtml(p.displayName)}">${escHtml(p.displayName)}</div>
       <div class="meta"><span>${p.sessionCount} 个对话</span><span>${fmtTime(p.latestTimestamp)}</span></div>
     </div>`).join('');
+  const loadMoreHtml = buildLoadMoreHtml(visibleProjects.length, projects.length, 'loadMoreProjects()');
+  list.innerHTML = itemsHtml + loadMoreHtml;
 }
 
 function renderSessionList(sessions, list) {
-  list.innerHTML = sessions.map(s => `
+  if (!list) return;
+  sessionsVisibleCount = ensureVisibleCountForSelection(sessions, currentSession, sessionsVisibleCount);
+  const visibleSessions = sessions.slice(0, sessionsVisibleCount);
+  const itemsHtml = visibleSessions.map(s => `
     <div class="session-item ${s.id === currentSession ? 'active' : ''}" data-id="${escHtml(s.id)}" onclick="selectSession('${escHtml(s.id)}')">
       <div class="preview">${escHtml(s.preview || s.id)}</div>
       <div class="meta"><span>${s.messageCount} 条消息</span><span>${fmtTime(s.latestTimestamp)}</span></div>
     </div>`).join('');
+  const loadMoreHtml = buildLoadMoreHtml(visibleSessions.length, sessions.length, 'loadMoreSessions()');
+  list.innerHTML = itemsHtml + loadMoreHtml;
+}
+
+function loadMoreProjects() {
+  const list = document.getElementById('project-list');
+  projectsVisibleCount = Math.min(projectsCache.length, projectsVisibleCount + getAdaptiveStep(list));
+  renderProjectList(projectsCache, list);
+}
+
+function loadMoreSessions() {
+  const list = document.getElementById('session-list');
+  sessionsVisibleCount = Math.min(sessionsCache.length, sessionsVisibleCount + getAdaptiveStep(list));
+  renderSessionList(sessionsCache, list);
 }
 
 // 启动
